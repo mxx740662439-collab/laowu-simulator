@@ -213,7 +213,10 @@
     conv.connect(wetBus);
     dryBus.connect(comp); wetBus.connect(comp);
     comp.connect(master); master.connect(ac.destination);
-    loadSamples();
+    if (!bufs.length) {
+      if (preBufs) bufs = preBufs.map(b => soften(b, 45));
+      else loadSamples();
+    }
     initPitcher();
   }
   function makeIR(dur) {
@@ -252,6 +255,21 @@
       .then(bs => { bufs = bs.map(b => soften(b, 45)); $('#idle').textContent = '按住滑动试试 ↑'; })
       .catch(() => { $('#idle').textContent = '采样解码失败'; });
   }
+  // 先用 OfflineAudioContext 把采样解好(不受自动播放限制)，真正的 AudioContext 留到首次手势再建
+  let preBufs = null;
+  function preloadSamples() {
+    const jobs = SAMPLES_B64.map(b64 => new Promise((res, rej) => {
+      try {
+        const bin = atob(b64), bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const Off = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+        const off = new Off(2, 44100, 44100);
+        off.decodeAudioData(bytes.buffer, res, rej);
+      } catch (e) { rej(e); }
+    }));
+    Promise.all(jobs).then(bs => { preBufs = bs; }).catch(() => {});
+  }
+
   function pickIdx(pool) {                     // 池内随机，不连着抽同一个
     const key = pool === POOL_R ? 'R' : 'L';
     if (pool.length < 2) return pool[0];
@@ -547,7 +565,7 @@
     if (ac) master.gain.setTargetAtTime(e.target.value / 100 * 0.8, ac.currentTime, 0.02);
   });
 
-  initAudio();   // 提前把采样和变调模块装好，第一次按下就能直接出声
+  preloadSamples();   // 提前解好采样；AudioContext 等首次点击(手势)再建
 })();
 </script>
 </body>
