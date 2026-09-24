@@ -114,7 +114,8 @@
   ];
   let rangeIdx = 1;
   const rangeOf = () => RANGES[rangeIdx];
-  const posToRate = t => { const r = rangeOf(); return r.lo * Math.pow(r.hi / r.lo, clamp(t, 0, 1)); };
+  const posToRate = t => { const r = rangeOf(); return r.lo * Math.pow(r.hi / r.lo, clamp(t, 0, 1)); };   // 左低右高
+  const posToVol = ty => 0.22 + 0.78 * (1 - clamp(ty, 0, 1));   // 上高下低
   const STEPS = 16;            // 隐形键盘的刻度数（跨过时触发"咬字"颗粒）
 
   /* ---------- 音频引擎 ---------- */
@@ -279,15 +280,16 @@
   }
 
   class Meow {
-    constructor(rate, pool) {
+    constructor(rate, pool, vol) {
       this.rate = rate; this.dead = false; this.pool = pool;
+      this.vol = vol;
       this.t0 = performance.now();
       this.oneshot = pool === POOL_R;      // 右键: 点一下就播完一整段
       this.idx = pickIdx(pool);
       this.g = ac.createGain(); this.g.gain.value = 0;
       this.g.connect(voiceBus);
       this.voice = this.spawn(bufs[this.idx], 0.03);
-      this.g.gain.linearRampToValueAtTime(VOL, ac.currentTime + 0.03);
+      this.g.gain.linearRampToValueAtTime(this.vol, ac.currentTime + 0.03);
       if (!this.oneshot) { this.prog = 0; this.last = performance.now(); this.scheduleSwap(); }
     }
     spawn(buf, fade) {                    // 一段采样，带自己的淡入淡出
@@ -334,6 +336,10 @@
       old.g.gain.linearRampToValueAtTime(0, t + 0.06);   // 交叉淡化
       setTimeout(() => { try { old.s.stop(); } catch (e) {} }, 180);
     }
+    setVol(v) {                           // Y 轴: 上大下小
+      this.vol = v;
+      this.g.gain.setTargetAtTime(v, ac.currentTime, 0.06);
+    }
     setRate(r) {
       this.rate = r;
       const t = ac.currentTime, v = this.voice;
@@ -344,8 +350,8 @@
       const t = ac.currentTime, g = this.g.gain;
       g.cancelScheduledValues(t);
       g.setValueAtTime(g.value, t);
-      g.linearRampToValueAtTime(Math.max(g.value * 0.45, 0.15), t + 0.012);
-      g.linearRampToValueAtTime(VOL, t + 0.07);
+      g.linearRampToValueAtTime(Math.max(g.value * 0.45, this.vol * 0.2), t + 0.012);
+      g.linearRampToValueAtTime(this.vol, t + 0.07);
     }
     fadeOut(sec) {                        // 柔和收尾
       const t = ac.currentTime, g = this.g.gain;
@@ -401,11 +407,13 @@
     const t = (e.clientX - r.left) / r.width;
     if (!bufs.length) { $('#idle').textContent = '采样加载中…'; $('#idle').style.opacity = 1; return; }
     const rate = posToRate(t), step = posToStep(t);
+    const ty = (e.clientY - r.top) / r.height;
+    const vol = VOL * posToVol(ty);
     const pool = e.button === 2 ? POOL_R : POOL_L;      // 右键 = 另一组叫声
-    voices.set(e.pointerId, { v: new Meow(rate, pool), t, rate, step });
+    voices.set(e.pointerId, { v: new Meow(rate, pool, vol), t, ty, rate, step, vol });
     curEff = Math.log2(rate);
     $('#idle').style.opacity = 0;
-    pushTrail(t, curEff);
+    pushTrail(t, ty);
   }
   function move(e) {
     const s = voices.get(e.pointerId);
@@ -413,10 +421,13 @@
     const r = stage.getBoundingClientRect();
     const t = (e.clientX - r.left) / r.width;
     const rate = posToRate(t), step = posToStep(t);
+    const ty = (e.clientY - r.top) / r.height;
     s.v.setRate(rate);
+    s.vol = VOL * posToVol(ty);
+    s.v.setVol(s.vol);
     if (step !== s.step) { s.v.jaw(); s.step = step; }
-    s.t = t; s.rate = rate; curEff = Math.log2(rate);
-    pushTrail(t, curEff);
+    s.t = t; s.rate = rate; s.ty = ty; curEff = Math.log2(rate);
+    pushTrail(t, ty);
   }
   function up(e) {
     const s = voices.get(e.pointerId);
@@ -424,8 +435,8 @@
     s.v.release();
     voices.delete(e.pointerId);
   }
-  function pushTrail(t, eff) {
-    trails.push({ t, eff, a: 1, on: true });
+  function pushTrail(t, ty) {
+    trails.push({ t, ty, a: 1, on: true });
     if (trails.length > 900) trails.splice(0, 300);
   }
 
@@ -500,8 +511,6 @@
     const kbH = 46 * dpr, plotH = H - kbH;
     ctx2d.clearRect(0, 0, W, H);
 
-    const yOf = e => plotH - clamp((e + 1) / 2, 0, 1) * (plotH - 30 * dpr) - 15 * dpr;
-
     // 键盘条（隐形：默认只有极淡的刻度）
     const kbTop = plotH;
     ctx2d.fillStyle = showGrid ? 'rgba(255,255,255,.75)' : 'rgba(255,255,255,.35)';
@@ -520,8 +529,8 @@
     for (const p of trails) {
       if (!p.on) p.a -= 0.012; else p.a -= 0.006;
       if (p.a <= 0) continue;
-      const x = p.t * W, y = yOf(p.eff);
-      const heat = clamp((p.eff + 1) / 2, 0, 1);
+      const x = p.t * W, y = p.ty * plotH;              // 跟着鼠标走
+      const heat = clamp(1 - p.ty, 0, 1);
       ctx2d.fillStyle = `rgba(${232 + heat * 10},${114 - heat * 40},${45 - heat * 30},${(p.a * 0.5).toFixed(3)})`;
       ctx2d.beginPath(); ctx2d.arc(x, y, (2 + heat * 3) * dpr, 0, 6.283); ctx2d.fill();
     }
@@ -529,15 +538,15 @@
 
     // 活跃触点
     for (const [, s] of voices) {
-      const eff = Math.log2(s.rate), x = s.t * W;
-      const heat = clamp((eff + 1) / 2, 0, 1);
-      const g = ctx2d.createRadialGradient(x, yOf(eff), 0, x, yOf(eff), 46 * dpr);
+      const x = s.t * W, y = s.ty * plotH;
+      const heat = clamp(1 - s.ty, 0, 1);
+      const g = ctx2d.createRadialGradient(x, y, 0, x, y, 46 * dpr);
       g.addColorStop(0, `rgba(255,170,80,${0.55 + heat * 0.3})`);
       g.addColorStop(1, 'rgba(255,170,80,0)');
       ctx2d.fillStyle = g;
-      ctx2d.beginPath(); ctx2d.arc(x, yOf(eff), 46 * dpr, 0, 6.283); ctx2d.fill();
+      ctx2d.beginPath(); ctx2d.arc(x, y, 46 * dpr, 0, 6.283); ctx2d.fill();
       ctx2d.fillStyle = '#E8722D';
-      ctx2d.beginPath(); ctx2d.arc(x, yOf(eff), 5 * dpr, 0, 6.283); ctx2d.fill();
+      ctx2d.beginPath(); ctx2d.arc(x, y, 5 * dpr, 0, 6.283); ctx2d.fill();
       ctx2d.fillRect(x - 1.5 * dpr, kbTop, 3 * dpr, kbH);
     }
 
