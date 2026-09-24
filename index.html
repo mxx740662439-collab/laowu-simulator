@@ -395,14 +395,19 @@
       const s = ac.createBufferSource();
       s.buffer = b; s.connect(master); s.start();
     } catch (e) {}
+    try {                                 // iOS: 再靠真实 audio 元素打通一次声道
+      const a = new Audio('data:audio/mpeg;base64,' + SAMPLES_B64[3]);
+      a.volume = 0; a.muted = true;
+      const p = a.play(); if (p && p.catch) p.catch(() => {});
+    } catch (e) {}
   }
   function down(e) {
     initAudio();
     unlock();
     setTimeout(() => {                      // resume 是异步的，稍后再确认一次
-      if (ac && ac.state !== 'running' && !voices.size) $('#idle').textContent = '点一下开启声音 🔈';
+      if (ac && ac.state !== 'running' && !voices.size) $('#idle').textContent = '没声音？请再点一下 / 用 Safari 打开 🔈';
     }, 400);
-    stage.setPointerCapture(e.pointerId);
+    try { stage.setPointerCapture(e.pointerId); } catch (err) {}
     const r = stage.getBoundingClientRect();
     const t = (e.clientX - r.left) / r.width;
     if (!bufs.length) { $('#idle').textContent = '采样加载中…'; $('#idle').style.opacity = 1; return; }
@@ -440,11 +445,23 @@
     if (trails.length > 900) trails.splice(0, 300);
   }
 
-  stage.addEventListener('pointerdown', down);
-  stage.addEventListener('pointermove', move);
-  stage.addEventListener('pointerup', up);
-  stage.addEventListener('pointercancel', up);
-  stage.addEventListener('pointerleave', up);
+  if ('PointerEvent' in window) {
+    stage.addEventListener('pointerdown', down);
+    stage.addEventListener('pointermove', move);
+    stage.addEventListener('pointerup', up);
+    stage.addEventListener('pointercancel', up);
+    stage.addEventListener('pointerleave', up);
+  } else {                                // 老 iOS WebView(如推特内置浏览器) 没有 PointerEvent
+    const wrap = fn => e => {
+      e.preventDefault();
+      for (const t of e.changedTouches)
+        fn({ pointerId: t.identifier, clientX: t.clientX, clientY: t.clientY, button: 0 });
+    };
+    stage.addEventListener('touchstart', wrap(down), { passive: false });
+    stage.addEventListener('touchmove', wrap(move), { passive: false });
+    stage.addEventListener('touchend', wrap(up), { passive: false });
+    stage.addEventListener('touchcancel', wrap(up), { passive: false });
+  }
   stage.addEventListener('contextmenu', e => e.preventDefault());
   // 兜底: 指针在窗口外松开、切标签页、失焦都要收声，避免一直响
   window.addEventListener('pointerup', up);
