@@ -361,13 +361,27 @@
 
   const posToStep = t => Math.round(clamp(t, 0, 1) * (STEPS - 1));
 
+  let unlocked = false;
+  function unlock() {                       // iOS/安卓: 必须在手势里 resume 并播一个静音片段才算解锁
+    if (unlocked || !ac) return;
+    unlocked = true;
+    try { ac.resume(); } catch (e) {}
+    try {
+      const b = ac.createBuffer(1, 1, 22050);
+      const s = ac.createBufferSource();
+      s.buffer = b; s.connect(master); s.start();
+    } catch (e) {}
+  }
   function down(e) {
     initAudio();
-    if (ac.state === 'suspended') ac.resume();
+    unlock();
+    setTimeout(() => {                      // resume 是异步的，稍后再确认一次
+      if (ac && ac.state !== 'running' && !voices.size) $('#idle').textContent = '点一下开启声音 🔈';
+    }, 400);
     stage.setPointerCapture(e.pointerId);
     const r = stage.getBoundingClientRect();
     const t = (e.clientX - r.left) / r.width;
-    if (!bufs.length) { $('#idle').textContent = '采样加载中…'; return; }
+    if (!bufs.length) { $('#idle').textContent = '采样加载中…'; $('#idle').style.opacity = 1; return; }
     const rate = posToRate(t), step = posToStep(t);
     const pool = e.button === 2 ? POOL_R : POOL_L;      // 右键 = 另一组叫声
     voices.set(e.pointerId, { v: new Meow(rate, pool), t, rate, step });
